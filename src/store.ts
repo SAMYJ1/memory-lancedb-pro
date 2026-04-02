@@ -4,6 +4,7 @@
 
 import type * as LanceDB from "@lancedb/lancedb";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   existsSync,
   accessSync,
@@ -14,6 +15,8 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildSmartMetadata, isMemoryActiveAt, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
+
+const require = createRequire(import.meta.url);
 
 // ============================================================================
 // Types

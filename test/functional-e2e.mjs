@@ -175,7 +175,8 @@ async function runFunctionalE2E() {
       ]);
     });
     const listed = JSON.parse(listOutput);
-    assert.equal(listed.length, 2);
+    assert.equal(listed.count, 2);
+    assert.equal(listed.items.length, 2);
 
     const searchOutput = await captureStdout(async () => {
       await program.parseAsync([
@@ -248,8 +249,8 @@ async function runFunctionalE2E() {
       ]);
     });
     const postDeleteListed = JSON.parse(postDeleteListOutput);
-    assert.equal(postDeleteListed.length, 1);
-    assert.equal(postDeleteListed[0].id, "11111111-1111-4111-8111-111111111111");
+    assert.equal(postDeleteListed.count, 1);
+    assert.equal(postDeleteListed.items[0].id, "11111111-1111-4111-8111-111111111111");
 
     const legacyPath = await createLegacyDb(workDir, [
       {
@@ -304,9 +305,9 @@ async function runFunctionalE2E() {
       ]);
     });
     const finalListed = JSON.parse(finalListOutput);
-    assert.equal(finalListed.length, 2);
-    assert.ok(finalListed.some((item) => item.id === "11111111-1111-4111-8111-111111111111"));
-    assert.ok(finalListed.some((item) => item.id === "legacy-func-1"));
+    assert.equal(finalListed.count, 2);
+    assert.ok(finalListed.items.some((item) => item.id === "11111111-1111-4111-8111-111111111111"));
+    assert.ok(finalListed.items.some((item) => item.id === "legacy-func-1"));
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }

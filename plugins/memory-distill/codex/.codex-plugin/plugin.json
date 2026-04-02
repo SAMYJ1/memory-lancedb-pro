@@ -1,0 +1,39 @@
+{
+  "name": "memory-distill",
+  "version": "0.1.0",
+  "description": "Prompt-based stop hook packaging for durable memory distillation decisions in Codex.",
+  "author": {
+    "name": "Local User",
+    "email": "local@example.invalid"
+  },
+  "homepage": "https://openai.com/",
+  "repository": "https://openai.com/",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "memory",
+    "hooks",
+    "distill"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "interface": {
+    "displayName": "Memory Distill",
+    "shortDescription": "Block stop only when durable context should trigger memory skill evaluation",
+    "longDescription": "Packages a Codex Stop hook that inspects the current turn for durable preferences, reusable debugging conclusions, or explicit long-term memory requests, then asks Codex to evaluate the memory-pro-codex skill before stopping.",
+    "developerName": "Local User",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://openai.com/",
+    "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/terms-of-use/",
+    "defaultPrompt": [
+      "Distill durable task conclusions before finishing work"
+    ],
+    "brandColor": "#1F6FEB",
+    "screenshots": []
+  }
+}

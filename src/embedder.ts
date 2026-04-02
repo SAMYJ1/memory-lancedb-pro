@@ -11,6 +11,7 @@
 import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { smartChunk } from "./chunker.js";
+import { createProxyAwareFetch } from "./http-client.js";
 
 // ============================================================================
 // Embedding Cache (LRU with TTL)
@@ -417,6 +418,7 @@ export class Embedder {
   private readonly _omitDimensions: boolean;
   /** Enable automatic chunking for long documents (default: true) */
   private readonly _autoChunk: boolean;
+  private readonly _fetch: typeof fetch;
 
   constructor(config: EmbeddingConfig & { chunking?: boolean }) {
     // Normalize apiKey to array and resolve environment variables
@@ -432,6 +434,7 @@ export class Embedder {
     this._omitDimensions = config.omitDimensions === true;
     // Enable auto-chunking by default for better handling of long documents
     this._autoChunk = config.chunking !== false;
+    this._fetch = createProxyAwareFetch(fetch);
     const profile = detectEmbeddingProviderProfile(this._baseURL, this._model);
     this._capabilities = getEmbeddingCapabilities(profile);
 
@@ -465,6 +468,7 @@ export class Embedder {
         apiKey: key,
         ...(baseURL ? { baseURL } : {}),
         defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
+        fetch: this._fetch,
       });
     });
 

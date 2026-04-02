@@ -578,7 +578,10 @@ Config keys (under `retrieval`):
 ## CLI Commands
 
 ```bash
+openclaw memory-pro store --text "Remember this" [--category fact] [--scope global] [--importance 0.7] [--json]
+openclaw memory-pro update <id> [--text "Updated text"] [--importance 0.9] [--category decision] [--scope global] [--json]
 openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
+openclaw memory-pro recall "query" [--scope global] [--limit 10] [--json]
 openclaw memory-pro search "query" [--scope global] [--limit 10] [--json]
 openclaw memory-pro stats [--scope global] [--json]
 openclaw memory-pro auth login [--provider openai-codex] [--model gpt-5.4] [--oauth-path /abs/path/oauth.json]
@@ -600,6 +603,8 @@ OAuth login flow:
 3. The command prints an authorization URL and opens your browser unless `--no-browser` is set
 4. After the callback succeeds, the command saves the plugin OAuth file (default: `~/.openclaw/.memory-lancedb-pro/oauth.json`), snapshots the previous api-key `llm` config for logout, and replaces the plugin `llm` config with OAuth settings (`auth`, `oauthProvider`, `model`, `oauthPath`)
 5. `openclaw memory-pro auth logout` deletes that OAuth file and restores the previous api-key `llm` config when that snapshot exists
+
+For automation, the stable `memory-pro --json` envelopes are documented in [docs/cli-json-contracts.md](docs/cli-json-contracts.md). The regression coverage for those contracts lives in `test/cli-json-contracts.test.mjs`.
 
 ---
 
@@ -805,6 +810,8 @@ openclaw doctor --fix # resolve any stale config after upgrade
 | Document | Description |
 | --- | --- |
 | [OpenClaw Integration Playbook](docs/openclaw-integration-playbook.md) | Deployment modes, verification, regression matrix |
+| [Codex / Claude Memory Setup](docs/agent-memory-setup.md) | Shared `memory-pro` CLI setup plus Codex and Claude `memory-distill` plugin installation |
+| [Memory CLI JSON Contracts](docs/cli-json-contracts.md) | Stable `memory-pro --json` envelopes for scripts and host integrations |
 | [Memory Architecture Analysis](docs/memory_architecture_analysis.md) | Full architecture deep-dive |
 | [CHANGELOG v1.1.0](docs/CHANGELOG-v1.1.0.md) | v1.1.0 behavior changes and upgrade rationale |
 | [Long-Context Chunking](docs/long-context-chunking.md) | Chunking strategy for long documents |

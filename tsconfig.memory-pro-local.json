@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": ".codex-build",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": false,
+    "noEmitOnError": false,
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "cli.ts",
+    "src/**/*.ts"
+  ]
+}

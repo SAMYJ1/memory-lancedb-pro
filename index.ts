@@ -51,6 +51,9 @@ import { createReflectionEventId } from "./src/reflection-event-store.js";
 import { buildReflectionMappedMetadata } from "./src/reflection-mapped-metadata.js";
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
+import { createCaptureService } from "./src/services/capture-service.js";
+import { createMemoryService } from "./src/services/memory-service.js";
+import { createRecallService } from "./src/services/recall-service.js";
 import { normalizeAutoCaptureText } from "./src/auto-capture-cleanup.js";
 
 // Import smart extraction & lifecycle components
@@ -61,12 +64,7 @@ import { createLlmClient } from "./src/llm-client.js";
 import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
 import { createTierManager, DEFAULT_TIER_CONFIG } from "./src/tier-manager.js";
 import { createMemoryUpgrader } from "./src/memory-upgrader.js";
-import {
-  buildSmartMetadata,
-  parseSmartMetadata,
-  stringifySmartMetadata,
-  toLifecycleMemory,
-} from "./src/smart-metadata.js";
+import { buildSmartMetadata, parseSmartMetadata, stringifySmartMetadata } from "./src/smart-metadata.js";
 import {
   filterUserMdExclusiveRecallResults,
   isUserMdExclusiveMemory,
@@ -788,7 +786,6 @@ function buildAutoCaptureConversationKeyFromSessionKey(sessionKey: string): stri
   const suffix = match?.[1]?.trim();
   return suffix || null;
 }
-
 function redactSecrets(text: string): string {
   const patterns: RegExp[] = [
     /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,
@@ -1241,113 +1238,7 @@ async function generateReflectionText(params: {
   };
 }
 
-// ============================================================================
-// Capture & Category Detection (from old plugin)
-// ============================================================================
-
-const MEMORY_TRIGGERS = [
-  /zapamatuj si|pamatuj|remember/i,
-  /preferuji|radši|nechci|prefer/i,
-  /rozhodli jsme|budeme používat/i,
-  /\b(we )?decided\b|we'?ll use|we will use|switch(ed)? to|migrate(d)? to|going forward|from now on/i,
-  /\+\d{10,}/,
-  /[\w.-]+@[\w.-]+\.\w+/,
-  /můj\s+\w+\s+je|je\s+můj/i,
-  /my\s+\w+\s+is|is\s+my/i,
-  /i (like|prefer|hate|love|want|need|care)/i,
-  /always|never|important/i,
-  // Chinese triggers (Traditional & Simplified)
-  /記住|记住|記一下|记一下|別忘了|别忘了|備註|备注/,
-  /偏好|喜好|喜歡|喜欢|討厭|讨厌|不喜歡|不喜欢|愛用|爱用|習慣|习惯/,
-  /決定|决定|選擇了|选择了|改用|換成|换成|以後用|以后用/,
-  /我的\S+是|叫我|稱呼|称呼/,
-  /老是|講不聽|總是|总是|從不|从不|一直|每次都/,
-  /重要|關鍵|关键|注意|千萬別|千万别/,
-  /幫我|筆記|存檔|存起來|存一下|重點|原則|底線/,
-];
-
-const CAPTURE_EXCLUDE_PATTERNS = [
-  // Memory management / meta-ops: do not store as long-term memory
-  /\b(memory-pro|memory_store|memory_recall|memory_forget|memory_update)\b/i,
-  /\bopenclaw\s+memory-pro\b/i,
-  /\b(delete|remove|forget|purge|cleanup|clean up|clear)\b.*\b(memory|memories|entry|entries)\b/i,
-  /\b(memory|memories)\b.*\b(delete|remove|forget|purge|cleanup|clean up|clear)\b/i,
-  /\bhow do i\b.*\b(delete|remove|forget|purge|cleanup|clear)\b/i,
-  /(删除|刪除|清理|清除).{0,12}(记忆|記憶|memory)/i,
-];
-
-export function shouldCapture(text: string): boolean {
-  let s = text.trim();
-
-  // Strip OpenClaw metadata headers (Conversation info or Sender)
-  const metadataPattern = /^(Conversation info|Sender) \(untrusted metadata\):[\s\S]*?\n\s*\n/gim;
-  s = s.replace(metadataPattern, "");
-
-  // CJK characters carry more meaning per character, use lower minimum threshold
-  const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
-    s,
-  );
-  const minLen = hasCJK ? 4 : 10;
-  if (s.length < minLen || s.length > 500) {
-    return false;
-  }
-  // Skip injected context from memory recall
-  if (s.includes("<relevant-memories>")) {
-    return false;
-  }
-  // Skip system-generated content
-  if (s.startsWith("<") && s.includes("</")) {
-    return false;
-  }
-  // Skip agent summary responses (contain markdown formatting)
-  if (s.includes("**") && s.includes("\n-")) {
-    return false;
-  }
-  // Skip emoji-heavy responses (likely agent output)
-  const emojiCount = (s.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
-  if (emojiCount > 3) {
-    return false;
-  }
-  // Exclude obvious memory-management prompts
-  if (CAPTURE_EXCLUDE_PATTERNS.some((r) => r.test(s))) return false;
-
-  return MEMORY_TRIGGERS.some((r) => r.test(s));
-}
-
-export function detectCategory(
-  text: string,
-): "preference" | "fact" | "decision" | "entity" | "other" {
-  const lower = text.toLowerCase();
-  if (
-    /prefer|radši|like|love|hate|want|偏好|喜歡|喜欢|討厭|讨厌|不喜歡|不喜欢|愛用|爱用|習慣|习惯/i.test(
-      lower,
-    )
-  ) {
-    return "preference";
-  }
-  if (
-    /rozhodli|decided|we decided|will use|we will use|we'?ll use|switch(ed)? to|migrate(d)? to|going forward|from now on|budeme|決定|决定|選擇了|选择了|改用|換成|换成|以後用|以后用|規則|流程|SOP/i.test(
-      lower,
-    )
-  ) {
-    return "decision";
-  }
-  if (
-    /\+\d{10,}|@[\w.-]+\.\w+|is called|jmenuje se|我的\S+是|叫我|稱呼|称呼/i.test(
-      lower,
-    )
-  ) {
-    return "entity";
-  }
-  if (
-    /\b(is|are|has|have|je|má|jsou)\b|總是|总是|從不|从不|一直|每次都|老是/i.test(
-      lower,
-    )
-  ) {
-    return "fact";
-  }
-  return "other";
-}
+export { detectCategory, shouldCapture } from "./src/services/capture-service.js";
 
 function sanitizeForContext(text: string): string {
   return text
@@ -1385,12 +1276,6 @@ function summarizeMessageContent(content: unknown): string {
     return `array(blocks=${content.length}, textBlocks=${textBlocks.length}, textLen=${combined.length}, preview=${summarizeTextPreview(combined)})`;
   }
   return `type=${Array.isArray(content) ? "array" : typeof content}`;
-}
-
-function summarizeCaptureDecision(text: string): string {
-  const trimmed = text.trim();
-  const preview = sanitizeForContext(trimmed).slice(0, 120);
-  return `len=${trimmed.length}, trigger=${shouldCapture(trimmed) ? "Y" : "N"}, noise=${isNoise(trimmed) ? "Y" : "N"}, preview=${JSON.stringify(preview)}`;
 }
 
 // ============================================================================
@@ -1993,7 +1878,46 @@ const memoryLanceDBProPlugin = {
     );
     logReg(`memory-lancedb-pro: diagnostic build tag loaded (${DIAG_BUILD_TAG})`);
 
+    // ========================================================================
+    // Markdown Mirror
+    // ========================================================================
+
+    const mdMirror = createMdMirrorWriter(api, config);
+
+    const memoryService = createMemoryService({
+      retriever,
+      scopeManager,
+      store,
+      embedder,
+      mdMirror,
+      defaultScope: config.scopes?.default ?? "global",
+      logger: api.logger,
+    });
+    const recallService = createRecallService({
+      memoryService,
+      store,
+      decayEngine,
+      tierManager,
+      workspaceBoundary: config.workspaceBoundary,
+      logger: api.logger,
+    });
+    const captureService = createCaptureService({
+      memoryService,
+      embedder,
+      smartExtractor,
+      workspaceBoundary: config.workspaceBoundary,
+      captureAssistant: config.captureAssistant === true,
+      extractMinMessages: config.extractMinMessages ?? 2,
+      logger: api.logger,
+      isNoise,
+    });
+
     api.on("message_received", (event: any, ctx: any) => {
+      captureService.recordIngressMessage({
+        channelId: ctx.channelId,
+        conversationId: ctx.conversationId,
+        content: event.content,
+      });
       const conversationKey = buildAutoCaptureConversationKeyFromIngress(
         ctx.channelId,
         ctx.conversationId,
@@ -2023,12 +1947,6 @@ const memoryLanceDBProPlugin = {
         `memory-lancedb-pro: ingress before_message_write agent=${ctx.agentId || event.agentId || "unknown"} sessionKey=${ctx.sessionKey || event.sessionKey || "unknown"} role=${role} ${summarizeMessageContent(message?.content)}`,
       );
     });
-
-    // ========================================================================
-    // Markdown Mirror
-    // ========================================================================
-
-    const mdMirror = createMdMirrorWriter(api, config);
 
     // ========================================================================
     // Register Tools
@@ -2271,7 +2189,7 @@ const memoryLanceDBProPlugin = {
         // (embedding → rerank → lifecycle), which can silently drop messages on
         // channels like Telegram when subsequent requests hit lock timeouts.
         // See: https://github.com/CortexReach/memory-lancedb-pro/issues/253
-        const recallWork = async (): Promise<{ prependContext: string } | undefined> => {
+        const recallWork = async (): Promise<{ prependContext: string; ephemeral?: boolean } | undefined> => {
           // Determine agent ID and accessible scopes
           const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
           const accessibleScopes = resolveScopeFilter(scopeManager, agentId);
@@ -2308,7 +2226,6 @@ const memoryLanceDBProPlugin = {
             query: recallQuery,
             limit: retrieveLimit,
             scopeFilter: accessibleScopes,
-            source: "auto-recall",
           }), config.workspaceBoundary);
 
           if (results.length === 0) {
@@ -2340,15 +2257,6 @@ const memoryLanceDBProPlugin = {
               if (isRedundant) dedupFilteredCount++;
               return !isRedundant;
             });
-
-            if (filteredResults.length === 0) {
-              if (results.length > 0) {
-                api.logger.info?.(
-                  `memory-lancedb-pro: all ${results.length} memories were filtered out due to redundancy policy`,
-                );
-              }
-              return;
-            }
 
             finalResults = filteredResults;
           }
@@ -2582,10 +2490,8 @@ const memoryLanceDBProPlugin = {
 
           // Determine agent ID and default scope
           const agentId = resolveHookAgentId(ctx?.agentId, (event as any).sessionKey);
-          const accessibleScopes = resolveScopeFilter(scopeManager, agentId);
-          const defaultScope = isSystemBypassId(agentId)
-            ? config.scopes?.default ?? "global"
-            : scopeManager.getDefaultScope(agentId);
+          const accessibleScopes = memoryService.getAccessibleScopes(agentId);
+          const defaultScope = memoryService.getDefaultWriteScope(agentId);
           const sessionKey = ctx?.sessionKey || (event as any).sessionKey || "unknown";
 
           api.logger.debug(
