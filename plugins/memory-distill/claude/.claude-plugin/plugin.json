@@ -1,0 +1,18 @@
+{
+  "name": "memory-distill",
+  "version": "0.1.2",
+  "description": "Prompt-based stop hook packaging for durable memory distillation decisions in Claude Code.",
+  "author": {
+    "name": "Local User",
+    "email": "local@example.invalid"
+  },
+  "homepage": "https://anthropic.com/",
+  "repository": "https://anthropic.com/",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "memory",
+    "hooks",
+    "distill"
+  ]
+}

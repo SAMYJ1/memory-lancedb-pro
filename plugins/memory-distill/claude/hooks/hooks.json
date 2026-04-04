@@ -1,0 +1,17 @@
+{
+  "description": "Prompt-based Stop hook that routes durable context through the plugin-local memory-distill skill before stopping.",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Decide whether Claude Code should stop. Context JSON: $ARGUMENTS\n\nReturn JSON only.\n- If `stop_hook_active` is true, return {\"ok\":true}.\n- Return {\"ok\":false,\"reason\":\"Use memory-distill:memory-distill skill — this turn created durable context: ...\"} only when the turn created durable context that should be handled through the plugin-local `memory-distill` skill.\n- Durable context means one of: a stable user preference/rule/constraint/project convention; an explicit request to remember, recall, inspect, correct, or update long-term memory; or a reusable debugging outcome such as a confirmed root cause, verified fix, or validated operational conclusion.\n- Do not block for casual chat, temporary status, TODOs, branch names, one-off failures, or information already fully handled in the current prompt.\n- Use `last_assistant_message` and transcript context when needed.\n- Keep `reason` to one short sentence and mention the specific durable context.\n- Otherwise return {\"ok\":true}.",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

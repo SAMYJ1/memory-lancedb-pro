@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CODEX_HOME:-$HOME/.codex}/plugins/memory-distill/hooks/stop-memory-distill.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

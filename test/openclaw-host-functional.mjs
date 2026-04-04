@@ -262,7 +262,8 @@ async function main() {
     assert.match(importOutput, /Import completed: 2 imported, 0 skipped/);
 
     const listBeforeDelete = parseJsonOutput(await runOpenClaw(profile, ["memory-pro", "list", "--scope", "global", "--json"]));
-    assert.equal(listBeforeDelete.length, 2);
+    assert.equal(listBeforeDelete.count, 2);
+    assert.equal(listBeforeDelete.items.length, 2);
 
     const searchOutput = parseJsonOutput(await runOpenClaw(profile, ["memory-pro", "search", "乌龙茶", "--scope", "global", "--json"]));
     assert.ok(searchOutput.length >= 1);
@@ -280,8 +281,8 @@ async function main() {
     assert.match(deleteOutput, /deleted successfully/i);
 
     const listAfterDelete = parseJsonOutput(await runOpenClaw(profile, ["memory-pro", "list", "--scope", "global", "--json"]));
-    assert.equal(listAfterDelete.length, 1);
-    assert.equal(listAfterDelete[0].id, "11111111-1111-4111-8111-111111111111");
+    assert.equal(listAfterDelete.count, 1);
+    assert.equal(listAfterDelete.items[0].id, "11111111-1111-4111-8111-111111111111");
 
     const statsAfterDelete = parseJsonOutput(await runOpenClaw(profile, ["memory-pro", "stats", "--scope", "global", "--json"]));
     assert.equal(statsAfterDelete.memory.totalCount, 1);
@@ -295,8 +296,8 @@ async function main() {
     assert.match(verifyOutput, /Valid:\s+Yes/);
 
     const listAfterMigrate = parseJsonOutput(await runOpenClaw(profile, ["memory-pro", "list", "--scope", "global", "--json"]));
-    assert.equal(listAfterMigrate.length, 2);
-    assert.ok(listAfterMigrate.some((entry) => entry.id === "legacy-1"));
+    assert.equal(listAfterMigrate.count, 2);
+    assert.ok(listAfterMigrate.items.some((entry) => entry.id === "legacy-1"));
 
     const statsAfterMigrate = parseJsonOutput(await runOpenClaw(profile, ["memory-pro", "stats", "--scope", "global", "--json"]));
     assert.equal(statsAfterMigrate.memory.totalCount, 2);

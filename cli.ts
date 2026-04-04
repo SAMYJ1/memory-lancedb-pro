@@ -9,12 +9,24 @@ import { homedir } from "node:os";
 import path from "node:path";
 import * as readline from "node:readline";
 import JSON5 from "json5";
+import { createDecayEngine } from "./src/decay-engine.js";
 import { loadLanceDB, type MemoryEntry, type MemoryStore } from "./src/store.js";
-import { createRetriever, type MemoryRetriever } from "./src/retriever.js";
+import { createRetriever, type MemoryRetriever, type RetrievalResult } from "./src/retriever.js";
 import type { MemoryScopeManager } from "./src/scopes.js";
 import type { MemoryMigrator } from "./src/migrate.js";
 import { createMemoryUpgrader } from "./src/memory-upgrader.js";
 import type { LlmClient } from "./src/llm-client.js";
+import { TEMPORAL_VERSIONED_CATEGORIES } from "./src/memory-categories.js";
+import {
+  appendRelation,
+  buildSmartMetadata,
+  deriveFactKey,
+  parseSmartMetadata,
+  stringifySmartMetadata,
+} from "./src/smart-metadata.js";
+import { createMemoryService } from "./src/services/memory-service.js";
+import { createRecallService, MAX_RECALL_QUERY_LENGTH } from "./src/services/recall-service.js";
+import { createTierManager } from "./src/tier-manager.js";
 import {
   getDefaultOauthModelForProvider,
   getOAuthProviderLabel,
@@ -48,6 +60,15 @@ interface CLIContext {
   };
 }
 
+const STORE_CATEGORIES = [
+  "preference",
+  "fact",
+  "decision",
+  "entity",
+  "other",
+  "reflection",
+] as const;
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
@@ -65,6 +86,11 @@ function getPluginVersion(): string {
 function clampInt(value: number, min: number, max: number): number {
   const n = Number.isFinite(value) ? value : min;
   return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function clamp01(value: number, fallback = 0.7): number {
+  const n = Number.isFinite(value) ? value : fallback;
+  return Math.max(0, Math.min(1, n));
 }
 
 function resolveOpenClawConfigPath(explicit?: string): string {
@@ -409,6 +435,139 @@ function formatJson(obj: any): string {
   return JSON.stringify(obj, null, 2);
 }
 
+function toScopeFilter(scope?: string): string[] | undefined {
+  return scope ? [scope] : undefined;
+}
+
+function formatMemoryJson(memory: MemoryEntry) {
+  const metadata = parseSmartMetadata(memory.metadata, memory);
+  return {
+    id: memory.id,
+    text: memory.text,
+    scope: memory.scope,
+    category: memory.category,
+    importance: memory.importance,
+    timestamp: memory.timestamp,
+    memoryCategory: metadata.memory_category || memory.category,
+    tier: metadata.tier || null,
+  };
+}
+
+function formatListJson(
+  memories: MemoryEntry[],
+  options: {
+    scopeFilter?: string[];
+    category?: string;
+    limit: number;
+    offset: number;
+  },
+) {
+  return {
+    ok: true,
+    action: "list",
+    count: memories.length,
+    limit: options.limit,
+    offset: options.offset,
+    scopeFilter: options.scopeFilter ?? null,
+    category: options.category ?? null,
+    items: memories.map(formatMemoryJson),
+  };
+}
+
+function formatRecallJson(query: string, results: RetrievalResult[]) {
+  return {
+    ok: true,
+    query,
+    count: results.length,
+    items: results.map((result) => {
+      const metadata = parseSmartMetadata(result.entry.metadata, result.entry);
+      return {
+        id: result.entry.id,
+        text: result.entry.text,
+        score: result.score,
+        scope: result.entry.scope,
+        category: result.entry.category,
+        importance: result.entry.importance,
+        timestamp: result.entry.timestamp,
+        memoryCategory: metadata.memory_category || result.entry.category,
+        tier: metadata.tier || null,
+      };
+    }),
+  };
+}
+
+function formatDeleteJson(id: string, deleted: boolean, scopeFilter?: string[]) {
+  return deleted
+    ? {
+      ok: true,
+      action: "deleted",
+      id,
+      scopeFilter,
+    }
+    : {
+      ok: false,
+      error: "not_found_or_access_denied",
+      id,
+      scopeFilter,
+    };
+}
+
+function formatStatsJson(
+  summary: {
+    memory: {
+      totalCount: number;
+      scopeCounts: Record<string, number>;
+      categoryCounts: Record<string, number>;
+    };
+    scopes: unknown;
+    retrieval: {
+      mode: string;
+      hasFtsSupport: boolean;
+    };
+  },
+  scopeFilter?: string[],
+) {
+  return {
+    ok: true,
+    action: "stats",
+    scopeFilter: scopeFilter ?? null,
+    ...summary,
+  };
+}
+
+function formatStoreJson(entry: MemoryEntry) {
+  return {
+    ok: true,
+    action: "created",
+    item: formatMemoryJson(entry),
+  };
+}
+
+function formatUpdateJson(
+  entry: MemoryEntry,
+  action: "updated" | "superseded",
+  fieldsUpdated: string[],
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    ok: true,
+    action,
+    item: formatMemoryJson(entry),
+    fieldsUpdated,
+    ...extra,
+  };
+}
+
+function parseCategoryOption(raw?: string): MemoryEntry["category"] | undefined {
+  if (!raw) return undefined;
+  if ((STORE_CATEGORIES as readonly string[]).includes(raw)) {
+    return raw as MemoryEntry["category"];
+  }
+  throw new Error(
+    `Invalid category "${raw}". Expected one of: ${STORE_CATEGORIES.join(", ")}`,
+  );
+}
+
 async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -424,6 +583,24 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
     }
     return createRetriever(context.store, context.embedder, context.retriever.getConfig());
   };
+
+  const memoryService = createMemoryService({
+    retriever: {
+      retrieve(params) {
+        return getSearchRetriever().retrieve(params);
+      },
+      test: context.retriever.test?.bind(context.retriever),
+    },
+    scopeManager: context.scopeManager,
+    store: context.store,
+    embedder: context.embedder,
+  });
+  const recallService = createRecallService({
+    memoryService,
+    store: context.store,
+    decayEngine: createDecayEngine(),
+    tierManager: createTierManager(),
+  });
 
   const runSearch = async (
     query: string,
@@ -646,6 +823,218 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
       }
     });
 
+  memory
+    .command("store")
+    .description("Store a memory")
+    .requiredOption("--text <text>", "Memory text")
+    .option("--category <category>", `Memory category (${STORE_CATEGORIES.join(", ")})`, "other")
+    .option("--scope <scope>", "Scope to write to")
+    .option("--importance <n>", "Importance score 0-1", "0.7")
+    .option("--json", "Output as JSON")
+    .action(async (options) => {
+      try {
+        if (!context.embedder) {
+          throw new Error("Store requires an embedder (not available in basic CLI mode).");
+        }
+
+        const text = String(options.text || "").trim();
+        if (!text) {
+          throw new Error("Memory text cannot be empty.");
+        }
+
+        const targetScope = options.scope || context.scopeManager.getDefaultScope();
+        if (!context.scopeManager.isAccessible(targetScope)) {
+          throw new Error(`Access denied to scope: ${targetScope}`);
+        }
+
+        const category = parseCategoryOption(options.category) ?? "other";
+        const importance = clamp01(parseFloat(options.importance), 0.7);
+        const vector = await context.embedder.embedPassage(text);
+        const entry = await memoryService.storeMemory({
+          text,
+          vector,
+          importance,
+          category,
+          scope: targetScope,
+          metadata: stringifySmartMetadata(
+            buildSmartMetadata(
+              { text, category, importance },
+              {
+                l0_abstract: text,
+                l1_overview: `- ${text}`,
+                l2_content: text,
+              },
+            ),
+          ),
+        });
+
+        if (options.json) {
+          console.log(formatJson(formatStoreJson(entry)));
+          return;
+        }
+
+        console.log(
+          `Stored: "${text.slice(0, 100)}${text.length > 100 ? "..." : ""}" in scope '${entry.scope}'`,
+        );
+      } catch (error) {
+        console.error("Failed to store memory:", error);
+        process.exit(1);
+      }
+    });
+
+  memory
+    .command("update <id>")
+    .description("Update an existing memory")
+    .option("--text <text>", "Updated memory text")
+    .option("--importance <n>", "Updated importance score 0-1")
+    .option("--category <category>", `Updated category (${STORE_CATEGORIES.join(", ")})`)
+    .option("--scope <scope>", "Scope to update within")
+    .option("--json", "Output as JSON")
+    .action(async (id, options) => {
+      try {
+        const text = typeof options.text === "string" ? options.text.trim() : undefined;
+        const hasImportance = options.importance !== undefined;
+        const importance = hasImportance ? clamp01(parseFloat(options.importance), 0.7) : undefined;
+        const category = parseCategoryOption(options.category);
+        if (!text && importance === undefined && !category) {
+          throw new Error("Nothing to update. Provide at least one of: text, importance, category.");
+        }
+
+        if (text && !context.embedder) {
+          throw new Error("Updating text requires an embedder (not available in basic CLI mode).");
+        }
+
+        const scopeFilter = toScopeFilter(options.scope);
+        const fieldsUpdated: string[] = [];
+        let updatedEntry: MemoryEntry | null = null;
+
+        if (text) {
+          fieldsUpdated.push("text");
+          fieldsUpdated.push("vector");
+        }
+        if (importance !== undefined) {
+          fieldsUpdated.push("importance");
+        }
+        if (category) {
+          fieldsUpdated.push("category");
+        }
+
+        if (text) {
+          const existing = await memoryService.getMemory(id, scopeFilter);
+          const newVector = await context.embedder!.embedPassage(text);
+
+          if (existing) {
+            const meta = parseSmartMetadata(existing.metadata, existing);
+            if (TEMPORAL_VERSIONED_CATEGORIES.has(meta.memory_category)) {
+              const now = Date.now();
+              const factKey = meta.fact_key ?? deriveFactKey(meta.memory_category, text);
+              const nextImportance = importance ?? existing.importance;
+              const newEntry = await memoryService.storeMemory({
+                text,
+                vector: newVector,
+                category: category ?? existing.category,
+                scope: existing.scope,
+                importance: nextImportance,
+                metadata: stringifySmartMetadata(
+                  buildSmartMetadata(
+                    { text, category: existing.category, importance: nextImportance },
+                    {
+                      l0_abstract: text,
+                      l1_overview: meta.l1_overview,
+                      l2_content: text,
+                      memory_category: meta.memory_category,
+                      tier: meta.tier,
+                      access_count: 0,
+                      confidence: nextImportance,
+                      valid_from: now,
+                      fact_key: factKey,
+                      supersedes: existing.id,
+                      relations: appendRelation([], {
+                        type: "supersedes",
+                        targetId: existing.id,
+                      }),
+                    },
+                  ),
+                ),
+              });
+
+              try {
+                const invalidatedMeta = buildSmartMetadata(existing, {
+                  fact_key: factKey,
+                  invalidated_at: now,
+                  superseded_by: newEntry.id,
+                  relations: appendRelation(meta.relations, {
+                    type: "superseded_by",
+                    targetId: newEntry.id,
+                  }),
+                });
+                await memoryService.updateMemory(
+                  existing.id,
+                  { metadata: stringifySmartMetadata(invalidatedMeta) },
+                  scopeFilter,
+                );
+              } catch (patchErr) {
+                console.warn(
+                  `memory-pro: failed to patch superseded record ${existing.id.slice(0, 8)}: ${patchErr}`,
+                );
+              }
+
+              if (options.json) {
+                console.log(formatJson(
+                  formatUpdateJson(newEntry, "superseded", fieldsUpdated, {
+                    oldId: existing.id,
+                    newId: newEntry.id,
+                  }),
+                ));
+                return;
+              }
+
+              console.log(
+                `Superseded memory ${existing.id.slice(0, 8)}... → new version ${newEntry.id.slice(0, 8)}...: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`,
+              );
+              return;
+            }
+          }
+
+          updatedEntry = await memoryService.updateMemory(
+            id,
+            {
+              text,
+              vector: newVector,
+              importance,
+              category,
+            },
+            scopeFilter,
+          );
+        } else {
+          updatedEntry = await memoryService.updateMemory(
+            id,
+            {
+              importance,
+              category,
+            },
+            scopeFilter,
+          );
+        }
+
+        if (!updatedEntry) {
+          throw new Error(`Memory ${id} not found or access denied.`);
+        }
+
+        if (options.json) {
+          console.log(formatJson(formatUpdateJson(updatedEntry, "updated", fieldsUpdated)));
+          return;
+        }
+
+        console.log(
+          `Updated memory ${updatedEntry.id.slice(0, 8)}...: "${updatedEntry.text.slice(0, 80)}${updatedEntry.text.length > 80 ? "..." : ""}"`,
+        );
+      } catch (error) {
+        console.error("Failed to update memory:", error);
+        process.exit(1);
+      }
+    });
+
   // List memories
   memory
     .command("list")
@@ -659,21 +1048,21 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
       try {
         const limit = parseInt(options.limit) || 20;
         const offset = parseInt(options.offset) || 0;
-
-        let scopeFilter: string[] | undefined;
-        if (options.scope) {
-          scopeFilter = [options.scope];
-        }
-
-        const memories = await context.store.list(
+        const scopeFilter = toScopeFilter(options.scope);
+        const memories = await memoryService.listMemories({
           scopeFilter,
-          options.category,
+          category: options.category,
           limit,
-          offset
-        );
+          offset,
+        });
 
         if (options.json) {
-          console.log(formatJson(memories));
+          console.log(formatJson(formatListJson(memories, {
+            scopeFilter,
+            category: options.category,
+            limit,
+            offset,
+          })));
         } else {
           if (memories.length === 0) {
             console.log("No memories found.");
@@ -690,6 +1079,50 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
       }
     });
 
+  memory
+    .command("recall <query>")
+    .description("Recall memories using the shared recall service")
+    .option("--scope <scope>", "Recall within specific scope")
+    .option("--category <category>", "Filter by category")
+    .option("--limit <n>", "Maximum number of results", "10")
+    .option("--json", "Output as JSON")
+    .action(async (query, options) => {
+      try {
+        const limit = parseInt(options.limit) || 10;
+        const scopeFilter = toScopeFilter(options.scope);
+        const recall = await recallService.prepareAutoRecall({
+          prompt: query,
+          limit,
+          scopeFilter,
+          category: options.category,
+          source: "cli",
+        });
+        const resolvedQuery = query.slice(0, MAX_RECALL_QUERY_LENGTH);
+        const results = recall?.results || [];
+
+        if (options.json) {
+          console.log(formatJson(formatRecallJson(resolvedQuery, results)));
+          return;
+        }
+
+        if (results.length === 0) {
+          console.log("No relevant memories found.");
+          return;
+        }
+
+        console.log(`Found ${results.length} memories:\n`);
+        results.forEach((result, index) => {
+          console.log(
+            `${index + 1}. [${result.entry.id}] [${result.entry.category}:${result.entry.scope}] ${result.entry.text} ` +
+            `(${(result.score * 100).toFixed(0)}%)`,
+          );
+        });
+      } catch (error) {
+        console.error("Recall failed:", error);
+        process.exit(1);
+      }
+    });
+
   // Search memories
   memory
     .command("search <query>")
@@ -701,12 +1134,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
     .action(async (query, options) => {
       try {
         const limit = parseInt(options.limit) || 10;
-
-        let scopeFilter: string[] | undefined;
-        if (options.scope) {
-          scopeFilter = [options.scope];
-        }
-
+        const scopeFilter = toScopeFilter(options.scope);
         const results = await runSearch(query, limit, scopeFilter, options.category);
 
         if (options.json) {
@@ -743,12 +1171,8 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
     .option("--json", "Output as JSON")
     .action(async (options) => {
       try {
-        let scopeFilter: string[] | undefined;
-        if (options.scope) {
-          scopeFilter = [options.scope];
-        }
-
-        const stats = await context.store.stats(scopeFilter);
+        const scopeFilter = toScopeFilter(options.scope);
+        const stats = await memoryService.getStats(scopeFilter);
         const scopeStats = context.scopeManager.getStats();
         const retrievalConfig = context.retriever.getConfig();
 
@@ -762,7 +1186,7 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
         };
 
         if (options.json) {
-          console.log(formatJson(summary));
+          console.log(formatJson(formatStatsJson(summary, scopeFilter)));
         } else {
           console.log(`Memory Statistics:`);
           console.log(`• Total memories: ${stats.totalCount}`);
@@ -791,25 +1215,42 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
   // Delete memory
   memory
     .command("delete <id>")
+    .alias("forget")
     .description("Delete a specific memory by ID")
     .option("--scope <scope>", "Scope to delete from (for access control)")
+    .option("--json", "Output as JSON")
     .action(async (id, options) => {
       try {
-        let scopeFilter: string[] | undefined;
-        if (options.scope) {
-          scopeFilter = [options.scope];
-        }
-
-        const deleted = await context.store.delete(id, scopeFilter);
+        const scopeFilter = toScopeFilter(options.scope);
+        const deleted = await memoryService.deleteMemory(id, scopeFilter);
 
         if (deleted) {
+          if (options.json) {
+            console.log(formatJson(formatDeleteJson(id, true, scopeFilter)));
+            return;
+          }
           console.log(`Memory ${id} deleted successfully.`);
         } else {
-          console.log(`Memory ${id} not found or access denied.`);
+          if (options.json) {
+            console.log(formatJson(formatDeleteJson(id, false, scopeFilter)));
+          } else {
+            console.log(`Memory ${id} not found or access denied.`);
+          }
           process.exit(1);
         }
       } catch (error) {
-        console.error("Failed to delete memory:", error);
+        if (options.json) {
+          console.log(
+            formatJson({
+              ok: false,
+              error: "delete_failed",
+              id,
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        } else {
+          console.error("Failed to delete memory:", error);
+        }
         process.exit(1);
       }
     });

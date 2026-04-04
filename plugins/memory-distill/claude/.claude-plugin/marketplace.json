@@ -1,0 +1,24 @@
+{
+  "name": "memory-distill",
+  "owner": {
+    "name": "Local User",
+    "email": "local@example.invalid"
+  },
+  "metadata": {
+    "description": "Local user marketplace for prompt-based durable memory distillation hooks.",
+    "version": "0.1.2"
+  },
+  "plugins": [
+    {
+      "name": "memory-distill",
+      "description": "Prompt-based Stop hook that asks Claude to evaluate the plugin-local memory-distill skill before stopping when durable context was produced.",
+      "version": "0.1.2",
+      "author": {
+        "name": "Local User",
+        "email": "local@example.invalid"
+      },
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
